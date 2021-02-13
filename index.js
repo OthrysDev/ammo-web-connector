@@ -1,250 +1,136 @@
 async function Connector(event) {
+  function extractHeadersValues(headers) {
+    const extractedHeaders = {};
 
-    function serialize(request) {
-      const headers = {};
-      for (const entry of request.headers.entries()) {
-        headers[entry[0]] = entry[1];
-      }
-  
-      const serialized = {
-        url: request.url,
-        headers,
-        method: request.method,
-        mode: request.mode,
-        credentials: request.credentials,
-        cache: request.cache,
-        redirect: request.redirect,
-        referrer: request.referrer,
-      };
-      if (request.method !== "GET" && request.method !== "HEAD") {
-        return request
-          .clone()
-          .text()
-          .then((body) => {
-            serialized.body = body;
-            return Promise.resolve(serialized);
-          });
-      }
-      return Promise.resolve(serialized);
-    }
-  
-    const { headers, method, url } = event.request;
-  
-    const reqHeaders = {};
-    const resHeaders = {};
-  
-    const response = {
-      headers: resHeaders,
-    };
-  
     for (const [header, value] of headers) {
-      reqHeaders[header] = value;
+      extractedHeaders[header] = value;
     }
-  
-    const serializedRequest = await serialize(event.request);
-  
-    if (!url.includes("socket")) {
-      let res;
-  
-      const r = await fetch(url, {
-        method,
-        headers: reqHeaders,
-        body: serializedRequest.body,
-      });
-  
-      for (const [header, value] of r.headers) {
-        resHeaders[header] = value;
-      }
-  
-      response.status = r.status;
-  
-      if (r.ok) {
-        res = r.json();
-      } else {
-        const reader = r.body.getReader();
-  
-        const encodedResponse = await reader.read();
-  
-        const stringifiedValue = new TextDecoder("utf-8").decode(encodedResponse.value);
-  
-        response.body = stringifiedValue;
-      }
-  
-      response.body = res;
-  
-      const data = {
-        data: {
-          method,
-          url,
-          request: {
-            headers: reqHeaders,
-            body: serializedRequest.body,
-          },
-          response,
-        },
-      };
-  
-      const options = {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(data), // body data type must match "Content-Type" header
-      };
-  
-      fetch("http://localhost:3001", options);
-    }
+
+    return extractedHeaders;
   }
-  
-  self.addEventListener("fetch", (event) => {
-    Connector(event);
-  });
-  
-  self.addEventListener("image", async (event) => {
-    Connector(event);
-  });
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  // eslint-disable-next-line no-restricted-globals
-  self.addEventListener('fetch', (event) => {
-      // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
-      function serialize(request) {
-          const headers = {};
-          // eslint-disable-next-line no-restricted-syntax
-          for (const entry of request.headers.entries()) {
-              // eslint-disable-next-line prefer-destructuring
-              headers[entry[0]] = entry[1];
-          }
-  
-          const serialized = {
-              url: request.url,
-              headers,
-              method: request.method,
-              mode: request.mode,
-              credentials: request.credentials,
-              cache: request.cache,
-              redirect: request.redirect,
-              referrer: request.referrer,
-          };
-          if (request.method !== 'GET' && request.method !== 'HEAD') {
-              return request
-                  .clone()
-                  .text()
-                  .then((body) => {
-                      serialized.body = body;
-                      return Promise.resolve(serialized);
-                  });
-          }
+
+  function serialize(request) {
+    // To be able to read the request as a valid JS object, we need this function to extract everything
+    const headers = extractHeadersValues(request.headers.entries());
+
+    const serialized = {
+      url: request.url,
+      headers,
+      method: request.method,
+      mode: request.mode,
+      credentials: request.credentials,
+      cache: request.cache,
+      redirect: request.redirect,
+      referrer: request.referrer,
+    };
+
+    // TODO Explain this part, maybe link the stackoverflow ?
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      return request
+        .clone()
+        .text()
+        .then((body) => {
+          serialized.body = body;
           return Promise.resolve(serialized);
-      }
-  
-      const { headers, method, url } = event.request;
-  
-      const reqHeaders = {};
-      const resHeaders = {};
-  
-      const response = {
-          headers: resHeaders,
-      };
-  
-      // eslint-disable-next-line no-restricted-syntax
-      for (const [header, value] of headers) {
-          reqHeaders[header] = value;
-      }
-  
-      if (event.request.url.includes('pokemon')) {
-          console.log('sw.js line 4 ----> event', event.request);
-          console.log('sw.js line 8 ----> reqHeaders', reqHeaders);
-      }
-  
-      serialize(event.request).then((serializedRequest) => {
-          if (event.request.url.includes('pokemon')) {
-              console.log('sw.js line 47 ----> url', url);
+        });
+    }
+    return Promise.resolve(serialized);
+  }
+
+  // Recover the necessary informations from the intercepted request
+  const { headers, method, url } = event.request;
+
+  // request and response are the necessary informations we need to send to Ammo
+  const request = {
+    headers: {},
+    body: null,
+  };
+
+  const response = {
+    headers: {},
+    body: null,
+    status: null,
+  };
+
+  request.headers = extractHeadersValues(headers);
+
+  serialize(event.request).then((serializedRequest) => {
+    // For now, we exclude the websocket protocol
+    // TODO Handle me differently as a legit url can contain the word socket
+    if (!url.includes('socket')) {
+      request.body = serializedRequest;
+
+      /*
+        We need to execute the intercepted request by ourself to access the response data.
+        TODO : Maybe find another way to handle it, and check for performance issue
+      */
+      fetch(url, {
+        method,
+        headers: request.headers,
+        body: serializedRequest.body,
+      })
+        .then(async (r) => {
+          // Now that the response object is here, fill the object with the necessary informations
+          response.headers = extractHeadersValues(r.headers);
+          response.status = r.status;
+
+          // If the response say "Alright it's all good", return it as usual
+          if (r.ok) {
+            return r.json();
           }
-  
-          if (!url.includes('socket')) {
-              fetch(url, {
-                  method,
-                  headers: reqHeaders,
-                  body: serializedRequest.body,
-              })
-                  .then(async (r) => {
-                      if (event.request.url.includes('pokemon')) {
-                          console.log('sw.js line 55 ----> r', r);
-                      }
-  
-                      // eslint-disable-next-line no-restricted-syntax
-                      for (const [header, value] of r.headers) {
-                          resHeaders[header] = value;
-                      }
-  
-                      response.status = r.status;
-  
-                      if (r.ok) {
-                          return r.json();
-                      }
-  
-                      const reader = r.body.getReader();
-  
-                      const encodedResponse = await reader.read();
-  
-                      const stringifiedValue = new TextDecoder('utf-8').decode(
-                          encodedResponse.value
-                      );
-                      response.body = stringifiedValue;
-                  })
-                  .then((res) => {
-                      response.body = res;
-                      console.log('sw.js line 64 ----> Went well', res);
-                  })
-                  .catch((err) => {
-                      if (event.request.url.includes('pokemon')) {
-                          console.log('sw.js line 89 ----> Went bad', err);
-                      }
-                  })
-                  .finally(() => {
-                      const data = {
-                          data: {
-                              method,
-                              url,
-                              request: {
-                                  headers: reqHeaders,
-                                  body: serializedRequest.body,
-                              },
-                              response,
-                          },
-                      };
-  
-                      const options = {
-                          method: 'POST',
-                          headers: {
-                              'Content-Type': 'application/json',
-                          },
-                          body: JSON.stringify(data), // body data type must match "Content-Type" header
-                      };
-  
-                      fetch('http://localhost:3001', options)
-                          .then((r) => r.json())
-                          .then((resp) => {
-                              if (event.request.url.includes('pokemon')) {
-                                  console.log(
-                                      'sw.js line 84 ----> Back end answered',
-                                      resp
-                                  );
-                              }
-                          });
-                  });
-          }
-      });
+
+          /*
+           But sometimes, the body is returned as a Stream. In this case, we need to read it,
+           decode the value recovered and finally save the final value into the response object.
+           */
+          const reader = r.body.getReader();
+
+          const encodedResponse = await reader.read();
+
+          const stringifiedValue = new TextDecoder('utf-8').decode(
+            encodedResponse.value
+          );
+
+          response.body = stringifiedValue;
+        })
+        .then((res) => {
+          //! Might not be necessary, could do it directly after the r.json() above
+          response.body = res;
+        })
+        .catch((err) => {
+          // TODO : Do something with the error
+        })
+        .finally(() => {
+          // Once we recovered everything, we actually build the request and send the data to Ammo
+          const data = {
+            data: {
+              method,
+              url,
+              request,
+              response,
+            },
+          };
+
+          const options = {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(data), // body data type must match "Content-Type" header
+          };
+
+          // TODO : Maybe put into a .env file nor into a well named variable
+          // TODO : Add a .catch to inform the user if something bad happened, aswell as a toggleable log to inform it went well
+          fetch('http://localhost:2001', options);
+        });
+    }
   });
-  
+}
+
+self.addEventListener('fetch', (event) => {
+  Connector(event);
+});
+
+self.addEventListener('image', (event) => {
+  Connector(event);
+});
